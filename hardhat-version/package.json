@@ -1,0 +1,25 @@
+{
+  "name": "eip-7702-hardhat-tests",
+  "version": "1.0.0",
+  "description": "EIP-7702 Sponsored Transaction Tests in Hardhat",
+  "main": "index.js",
+  "scripts": {
+    "test": "hardhat test",
+    "test:gas": "REPORT_GAS=true hardhat test",
+    "compile": "hardhat compile",
+    "node": "hardhat node",
+    "deploy": "hardhat run scripts/deploy.js"
+  },
+  "keywords": ["ethereum", "eip-7702", "hardhat", "sponsored-transactions"],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^4.0.0",
+    "@openzeppelin/contracts": "^5.4.0",
+    "hardhat": "^2.26.0",
+    "hardhat-gas-reporter": "^1.0.9"
+  },
+  "dependencies": {
+    "ethers": "^6.8.0"
+  }
+}

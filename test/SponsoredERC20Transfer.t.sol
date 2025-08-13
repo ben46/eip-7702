@@ -23,6 +23,9 @@ contract SponsoredERC20TransferTest is Test {
 
     // Charlie的地址（代币接收者）
     address constant CHARLIE_ADDRESS = 0x90F79bf6EB2c4f870365E785982E1f101E93b906;
+    
+    // Gas价格常量 - 用于模拟真实网络环境
+    uint256 constant GAS_PRICE = 20 gwei; // 20 gwei
 
     // Alice将委托执行给这个合约
     BatchCallAndSponsor public implementation;
@@ -69,9 +72,15 @@ contract SponsoredERC20TransferTest is Test {
         uint256 aliceBalanceBefore = token.balanceOf(ALICE_ADDRESS);
         uint256 charlieBalanceBefore = token.balanceOf(CHARLIE_ADDRESS);
         
+        // 记录gas余额
+        uint256 aliceGasBalanceBefore = ALICE_ADDRESS.balance;
+        uint256 bobGasBalanceBefore = BOB_ADDRESS.balance;
+        
         console2.log("Balances before transfer:");
-        console2.log("Alice:", aliceBalanceBefore);
-        console2.log("Charlie:", charlieBalanceBefore);
+        console2.log("Alice tokens:", aliceBalanceBefore);
+        console2.log("Charlie tokens:", charlieBalanceBefore);
+        console2.log("Alice ETH (gas):", aliceGasBalanceBefore);
+        console2.log("Bob ETH (gas):", bobGasBalanceBefore);
 
         // 创建调用数组 - ERC20转账
         BatchCallAndSponsor.Call[] memory calls = new BatchCallAndSponsor.Call[](1);
@@ -84,10 +93,22 @@ contract SponsoredERC20TransferTest is Test {
         // Alice签署委托，允许`implementation`代表她执行交易
         Vm.SignedDelegation memory signedDelegation = vm.signDelegation(address(implementation), ALICE_PK);
 
+        // 设置gas价格以模拟真实网络环境
+        vm.txGasPrice(GAS_PRICE);
+        
         // Bob附加Alice的签名委托并广播
+        // 这行代码做了以下事情：
+        // ✅ 指定Bob作为交易发送者
+        // ✅ 使用Bob的私钥签名交易
+        // ✅ Bob支付所有gas费用
+        // ✅ 实际向区块链网络广播交易
         vm.startBroadcast(BOB_PK);
-        vm.attachDelegation(signedDelegation);
 
+        // 附加Alice的委托签名到即将发送的交易中
+        // 告诉EVM这个交易包含一个委托授权，Alice授权某个合约代表她执行操作
+        // 不发送交易: 这只是为交易添加委托信息，本身不发送交易
+        vm.attachDelegation(signedDelegation);
+    
         // 验证Alice的账户现在临时表现为智能合约
         bytes memory code = address(ALICE_ADDRESS).code;
         require(code.length > 0, "No code written to Alice account");
@@ -110,8 +131,15 @@ contract SponsoredERC20TransferTest is Test {
         vm.expectEmit(true, true, true, true);
         emit BatchCallAndSponsor.CallExecuted(BOB_ADDRESS, calls[0].to, calls[0].value, calls[0].data);
 
+        // 记录gas使用量 - 在执行前
+        uint256 gasStart = gasleft();
+        
         // Bob通过Alice的临时分配合约执行交易
         BatchCallAndSponsor(ALICE_ADDRESS).execute(calls, signature);
+        
+        // 记录gas使用量 - 在执行后
+        uint256 gasEnd = gasleft();
+        uint256 gasUsed = (gasStart - gasEnd) * tx.gasprice;
 
         vm.stopBroadcast();
 
@@ -119,12 +147,45 @@ contract SponsoredERC20TransferTest is Test {
         uint256 aliceBalanceAfter = token.balanceOf(ALICE_ADDRESS);
         uint256 charlieBalanceAfter = token.balanceOf(CHARLIE_ADDRESS);
         
+        // 记录gas余额变化
+        uint256 aliceGasBalanceAfter = ALICE_ADDRESS.balance;
+        uint256 bobGasBalanceAfter = BOB_ADDRESS.balance;
+        
         console2.log("Balances after transfer:");
-        console2.log("Alice:", aliceBalanceAfter);
-        console2.log("Charlie:", charlieBalanceAfter);
+        console2.log("Alice tokens:", aliceBalanceAfter);
+        console2.log("Charlie tokens:", charlieBalanceAfter);
+        console2.log("Alice ETH (gas):", aliceGasBalanceAfter);
+        console2.log("Bob ETH (gas):", bobGasBalanceAfter);
 
         assertEq(aliceBalanceAfter, aliceBalanceBefore - transferAmount, "Alice balance should decrease");
         assertEq(charlieBalanceAfter, charlieBalanceBefore + transferAmount, "Charlie balance should increase");
+
+        // 验证gas消耗：Alice的gas应该不变
+        assertEq(aliceGasBalanceAfter, aliceGasBalanceBefore, "Alice should not consume any gas (sponsored transaction)");
+        
+        // 计算实际的gas消耗
+        uint256 aliceGasConsumed = aliceGasBalanceBefore - aliceGasBalanceAfter;
+        uint256 bobGasConsumed = bobGasBalanceBefore - bobGasBalanceAfter;
+        
+        console2.log("Current gas price:", tx.gasprice);
+        console2.log("Gas used for transaction:", gasUsed);
+        console2.log("Gas consumed by Alice (ETH):", aliceGasConsumed, "(should be 0)");
+        console2.log("Gas consumed by Bob (ETH):", bobGasConsumed);
+        
+        // 验证Alice没有消耗任何gas
+        assertEq(aliceGasConsumed, 0, "Alice should not consume any gas in sponsored transaction");
+        
+        // 验证计算出的gas使用量大于0 - 这证明交易确实消耗了gas
+        assertTrue(gasUsed > 0, "Transaction should consume gas");
+        
+        // 验证gas价格设置正确
+        assertEq(tx.gasprice, GAS_PRICE, "Gas price should be set to our configured value");
+        
+        console2.log("SUCCESS: Real gas consumption verified!");
+        console2.log("- Alice consumed 0 gas (sponsored transaction)");
+        console2.log("- Transaction consumed", gasUsed, "wei in gas fees");
+        console2.log("- Gas price:", tx.gasprice, "wei per gas");
+        console2.log("- Actual gas units used:", gasUsed / tx.gasprice);
         
         console2.log("SUCCESS: Sponsored ERC-20 transfer test passed!");
     }
@@ -171,6 +232,9 @@ contract SponsoredERC20TransferTest is Test {
         // Alice签署委托
         Vm.SignedDelegation memory signedDelegation = vm.signDelegation(address(implementation), ALICE_PK);
 
+        // 设置gas价格以模拟真实网络环境
+        vm.txGasPrice(GAS_PRICE);
+        
         // Bob执行赞助交易
         vm.startBroadcast(BOB_PK);
         vm.attachDelegation(signedDelegation);
@@ -251,6 +315,9 @@ contract SponsoredERC20TransferTest is Test {
         // Alice签署委托
         Vm.SignedDelegation memory signedDelegation = vm.signDelegation(address(implementation), ALICE_PK);
 
+        // 设置gas价格以模拟真实网络环境
+        vm.txGasPrice(GAS_PRICE);
+        
         // Bob执行赞助交易
         vm.startBroadcast(BOB_PK);
         vm.attachDelegation(signedDelegation);
@@ -311,6 +378,9 @@ contract SponsoredERC20TransferTest is Test {
         // Alice签署委托
         Vm.SignedDelegation memory signedDelegation = vm.signDelegation(address(implementation), ALICE_PK);
 
+        // 设置gas价格以模拟真实网络环境
+        vm.txGasPrice(GAS_PRICE);
+        
         // Bob执行赞助交易
         vm.startBroadcast(BOB_PK);
         vm.attachDelegation(signedDelegation);
@@ -362,6 +432,9 @@ contract SponsoredERC20TransferTest is Test {
         // Alice签署委托
         Vm.SignedDelegation memory signedDelegation = vm.signDelegation(address(implementation), ALICE_PK);
 
+        // 设置gas价格以模拟真实网络环境
+        vm.txGasPrice(GAS_PRICE);
+        
         // Bob执行赞助交易
         vm.startBroadcast(BOB_PK);
         vm.attachDelegation(signedDelegation);
